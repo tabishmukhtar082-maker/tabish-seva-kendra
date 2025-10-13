@@ -1,0 +1,68 @@
+## .NET Core
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.cache
+*.db
+*.dbmdl
+*.sql
+*.sqlite
+*.sqlite3
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+bld/
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet
+.nuget/
+*.nupkg
+packages/
+
+# MSTest
+*.VisualState.xml
+TestResult.xml
+
+# Files built by Visual Studio
+*_i.c
+*_p.c
+*.ilk
+*.meta
+*.obj
+*.pch
+*.pdb
+*.pgc
+*.pgd
+*.rsp
+*.sbr
+*.tlb
+*.tli
+*.tlh
+*.tmp
+*.tmp_proj
+*.log
+*.vspscc
+*.vssscc
+.builds
+*.pidb
+*.svclog
+*.scc
+
+# User-specific files
+*.rsuser
+*.userprefs 
