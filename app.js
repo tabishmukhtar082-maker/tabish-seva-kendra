@@ -1,5 +1,5 @@
 const express = require('express');
-const mysql = require('mysql2');
+const { Pool } = require('pg');
 const cors = require('cors');
 
 const app = express();
@@ -9,29 +9,105 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// MySQL Connection
-const connection = mysql.createConnection({
-  host: process.env.DB_HOST || 'tabishdevelopersDB.mssql.somee.com',
-  user: process.env.DB_USER || 'MOHDTABISH41_SQLLogin_1',
-  password: process.env.DB_PASSWORD || 'Tabish@1994',
-  database: process.env.DB_NAME || 'tabishdevelopersDB',
-  port: process.env.DB_PORT || 1433,
-  connectTimeout: 60000,
-  acquireTimeout: 60000,
-  timeout: 60000,
-  reconnect: true
+// PostgreSQL Connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
-// Connect to MySQL
-connection.connect((err) => {
-  if (err) {
-    console.error('MySQL connection failed:', err.message);
-    console.log('Retrying connection in 5 seconds...');
-    setTimeout(() => {
-      connection.connect();
-    }, 5000);
-  } else {
-    console.log('✅ Connected to MySQL database successfully!');
+// Test database connection
+app.get('/api/test-db', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    const result = await client.query('SELECT NOW() as current_time');
+    client.release();
+    
+    res.json({ 
+      message: '✅ PostgreSQL Database Connected Successfully!',
+      current_time: result.rows[0].current_time,
+      status: 'success',
+      database: 'Render PostgreSQL'
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      error: 'Database connection failed',
+      message: err.message 
+    });
+  }
+});
+
+// Create users table (first time ke liye)
+app.get('/api/init-db', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    
+    // Create users table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        email VARCHAR(100) UNIQUE NOT NULL,
+        phone VARCHAR(20),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Insert sample data
+    await client.query(`
+      INSERT INTO users (name, email, phone) 
+      VALUES 
+        ('Tabish', 'tabish@example.com', '9876543210'),
+        ('John Doe', 'john@example.com', '1234567890')
+      ON CONFLICT (email) DO NOTHING
+    `);
+    
+    client.release();
+    res.json({ message: '✅ Database initialized successfully with sample data!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get all users
+app.get('/api/users', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    const result = await client.query('SELECT * FROM users ORDER BY id');
+    client.release();
+    res.json({ 
+      success: true,
+      users: result.rows 
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false,
+      error: err.message 
+    });
+  }
+});
+
+// Add new user
+app.post('/api/users', async (req, res) => {
+  try {
+    const { name, email, phone } = req.body;
+    const client = await pool.connect();
+    const result = await client.query(
+      'INSERT INTO users (name, email, phone) VALUES ($1, $2, $3) RETURNING *',
+      [name, email, phone]
+    );
+    client.release();
+    res.json({ 
+      success: true,
+      user: result.rows[0],
+      message: 'User added successfully!'
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false,
+      error: err.message 
+    });
   }
 });
 
@@ -39,64 +115,30 @@ connection.connect((err) => {
 app.get('/', (req, res) => {
   res.json({ 
     message: 'MyFlutterAPI is working! 🚀',
-    database: 'MySQL Connected',
+    database: 'Render PostgreSQL',
     timestamp: new Date().toISOString(),
-    status: 'success'
-  });
-});
-
-// Test database connection
-app.get('/api/test-db', (req, res) => {
-  connection.query('SELECT 1 + 1 AS solution', (error, results) => {
-    if (error) {
-      return res.status(500).json({ 
-        error: 'Database connection failed',
-        message: error.message 
-      });
+    status: 'success',
+    endpoints: {
+      test_db: '/api/test-db',
+      init_db: '/api/init-db', 
+      get_users: '/api/users',
+      add_user: 'POST /api/users'
     }
-    res.json({ 
-      message: 'Database connection successful!',
-      result: results[0].solution 
-    });
   });
 });
 
-// Get all users (example API)
-app.get('/api/users', (req, res) => {
-  connection.query('SELECT * FROM users', (error, results) => {
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
-    res.json({ users: results });
-  });
-});
-
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK',
-    database: 'Connected',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    database: 'PostgreSQL',
+    timestamp: new Date().toISOString()
   });
-});
-
-// Error handling
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
 });
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 MyFlutterAPI server running on port ${PORT}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-});
-
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-  console.log('Shutting down server...');
-  connection.end();
-  process.exit(0);
+  console.log(`📊 Database: Render PostgreSQL`);
+  console.log(`🔗 URL: https://tabish-seva-kendra.onrender.com`);
 });
