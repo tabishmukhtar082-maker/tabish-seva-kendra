@@ -1,5 +1,5 @@
 const express = require('express');
-const mongoose = require('mongoose');
+const { Pool } = require('pg');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -10,52 +10,121 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB Connection (Atlas ya local)
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/tabish_seva_kendra';
+// 🔍 DEBUG: Detailed connection testing
+console.log('🚀 Starting Tabish Seva Kendra Server...');
+console.log('🔧 Checking Environment Variables:');
+console.log('DATABASE_URL:', process.env.DATABASE_URL ? '✅ PRESENT' : '❌ MISSING');
+console.log('JWT_SECRET:', process.env.JWT_SECRET ? '✅ PRESENT' : '❌ MISSING');
 
-mongoose.connect(MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log('MongoDB Connected'))
-.catch(err => console.log('MongoDB Error:', err));
+if (process.env.DATABASE_URL) {
+  console.log('📊 DATABASE_URL starts with:', process.env.DATABASE_URL.substring(0, 30) + '...');
+}
 
-// MongoDB Models
-const UserSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  phone: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  role: { type: String, default: 'user' },
-  createdAt: { type: Date, default: Date.now }
+// PostgreSQL Connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
-const ServiceSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  description: { type: String, required: true },
-  icon: { type: String, default: '📄' },
-  color: { type: String, default: '#2196F3' },
-  isActive: { type: Boolean, default: true },
-  createdAt: { type: Date, default: Date.now }
-});
+console.log('✅ PostgreSQL Pool Created');
 
-const RequestSchema = new mongoose.Schema({
-  userName: { type: String, required: true },
-  userPhone: { type: String, required: true },
-  serviceName: { type: String, required: true },
-  serviceId: { type: String, required: true },
-  aadharNumber: { type: String },
-  address: { type: String },
-  status: { type: String, default: 'pending' }, // pending, approved, rejected, completed
-  submittedAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-});
+// Test database connection and create tables
+const initializeDatabase = async () => {
+  try {
+    const client = await pool.connect();
+    console.log('✅ Database Connection Successful!');
+    
+    // Test query
+    const result = await client.query('SELECT NOW() as current_time');
+    console.log('✅ Database Time:', result.rows[0].current_time);
+    
+    // Create tables if not exists
+    console.log('🔧 Creating tables...');
+    
+    // Users table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        phone VARCHAR(10) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        role VARCHAR(20) DEFAULT 'user',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-const User = mongoose.model('User', UserSchema);
-const Service = mongoose.model('Service', ServiceSchema);
-const Request = mongoose.model('Request', RequestSchema);
+    // Services table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS services (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        description TEXT NOT NULL,
+        icon VARCHAR(10) DEFAULT '📄',
+        color VARCHAR(20) DEFAULT '#2196F3',
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Requests table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS requests (
+        id SERIAL PRIMARY KEY,
+        user_name VARCHAR(100) NOT NULL,
+        user_phone VARCHAR(10) NOT NULL,
+        service_name VARCHAR(100) NOT NULL,
+        service_id VARCHAR(50) NOT NULL,
+        aadhar_number VARCHAR(12),
+        address TEXT,
+        status VARCHAR(20) DEFAULT 'pending',
+        submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    console.log('✅ Tables created successfully');
+
+    // Insert default services
+    const servicesResult = await client.query('SELECT COUNT(*) FROM services');
+    if (parseInt(servicesResult.rows[0].count) === 0) {
+      await client.query(`
+        INSERT INTO services (name, description, icon, color) 
+        VALUES 
+        ('Aadhar Card', 'Aadhar card application and correction services', '🆔', '#2196F3'),
+        ('PAN Card', 'PAN card application and update services', '💳', '#4CAF50'),
+        ('Voter ID', 'Voter ID card application and verification', '🗳️', '#FF9800'),
+        ('Ration Card', 'Ration card application and family member updates', '📋', '#9C27B0')
+      `);
+      console.log('✅ Default services inserted');
+    } else {
+      console.log('✅ Services already exist');
+    }
+
+    // Check existing tables
+    const tablesResult = await client.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+    `);
+    console.log('✅ Existing Tables:', tablesResult.rows.map(row => row.table_name));
+    
+    client.release();
+    console.log('🎉 Database initialization completed!');
+    
+  } catch (error) {
+    console.error('❌ DATABASE INITIALIZATION FAILED:');
+    console.error('Error Message:', error.message);
+    console.error('Error Code:', error.code);
+    console.error('Error Detail:', error.detail);
+  }
+};
+
+initializeDatabase();
 
 // JWT Secret
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key';
+const JWT_SECRET = process.env.JWT_SECRET || 'tabish_seva_secret_key';
 
 // Auth Middleware
 const authMiddleware = async (req, res, next) => {
@@ -74,12 +143,12 @@ const authMiddleware = async (req, res, next) => {
 };
 
 // 🔹 1. USER AUTHENTICATION APIs
+
 // POST /api/auth/register
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, phone, password } = req.body;
 
-    // Validation
     if (!name || !phone || !password) {
       return res.status(400).json({ 
         success: false, 
@@ -94,9 +163,13 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ phone });
-    if (existingUser) {
+    // Check if user exists
+    const userExists = await pool.query(
+      'SELECT * FROM users WHERE phone = $1', 
+      [phone]
+    );
+
+    if (userExists.rows.length > 0) {
       return res.status(400).json({ 
         success: false, 
         message: 'User already exists with this phone number' 
@@ -108,17 +181,16 @@ app.post('/api/auth/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
     // Create user
-    const user = new User({
-      name,
-      phone,
-      password: hashedPassword
-    });
+    const newUser = await pool.query(
+      'INSERT INTO users (name, phone, password) VALUES ($1, $2, $3) RETURNING *',
+      [name, phone, hashedPassword]
+    );
 
-    await user.save();
+    const user = newUser.rows[0];
 
     // Generate JWT token
     const token = jwt.sign(
-      { userId: user._id, phone: user.phone, role: user.role },
+      { userId: user.id, phone: user.phone, role: user.role },
       JWT_SECRET,
       { expiresIn: '30d' }
     );
@@ -127,7 +199,7 @@ app.post('/api/auth/register', async (req, res) => {
       success: true,
       message: 'Registration successful',
       user: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         phone: user.phone,
         role: user.role
@@ -149,7 +221,6 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { phone, password } = req.body;
 
-    // Validation
     if (!phone || !password) {
       return res.status(400).json({ 
         success: false, 
@@ -158,13 +229,19 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     // Find user
-    const user = await User.findOne({ phone });
-    if (!user) {
+    const userResult = await pool.query(
+      'SELECT * FROM users WHERE phone = $1', 
+      [phone]
+    );
+
+    if (userResult.rows.length === 0) {
       return res.status(400).json({ 
         success: false, 
         message: 'Invalid phone number or password' 
       });
     }
+
+    const user = userResult.rows[0];
 
     // Check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
@@ -177,7 +254,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Generate JWT token
     const token = jwt.sign(
-      { userId: user._id, phone: user.phone, role: user.role },
+      { userId: user.id, phone: user.phone, role: user.role },
       JWT_SECRET,
       { expiresIn: '30d' }
     );
@@ -186,7 +263,7 @@ app.post('/api/auth/login', async (req, res) => {
       success: true,
       message: 'Login successful',
       user: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         phone: user.phone,
         role: user.role
@@ -204,13 +281,17 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // 🔹 2. SERVICES MANAGEMENT APIs
+
 // GET /api/services
 app.get('/api/services', async (req, res) => {
   try {
-    const services = await Service.find({ isActive: true });
+    const servicesResult = await pool.query(
+      'SELECT * FROM services WHERE is_active = true ORDER BY created_at DESC'
+    );
+    
     res.json({
       success: true,
-      services: services
+      services: servicesResult.rows
     });
   } catch (error) {
     console.error('Get services error:', error);
@@ -233,19 +314,15 @@ app.post('/api/services', authMiddleware, async (req, res) => {
       });
     }
 
-    const service = new Service({
-      name,
-      description,
-      icon: icon || '📄',
-      color: color || '#2196F3'
-    });
-
-    await service.save();
+    const newService = await pool.query(
+      'INSERT INTO services (name, description, icon, color) VALUES ($1, $2, $3, $4) RETURNING *',
+      [name, description, icon || '📄', color || '#2196F3']
+    );
 
     res.status(201).json({
       success: true,
       message: 'Service added successfully',
-      service: service
+      service: newService.rows[0]
     });
 
   } catch (error) {
@@ -262,13 +339,12 @@ app.put('/api/services/:id', authMiddleware, async (req, res) => {
   try {
     const { name, description, icon, color } = req.body;
 
-    const service = await Service.findByIdAndUpdate(
-      req.params.id,
-      { name, description, icon, color, updatedAt: Date.now() },
-      { new: true }
+    const updatedService = await pool.query(
+      'UPDATE services SET name = $1, description = $2, icon = $3, color = $4 WHERE id = $5 RETURNING *',
+      [name, description, icon, color, req.params.id]
     );
 
-    if (!service) {
+    if (updatedService.rows.length === 0) {
       return res.status(404).json({ 
         success: false, 
         message: 'Service not found' 
@@ -278,7 +354,7 @@ app.put('/api/services/:id', authMiddleware, async (req, res) => {
     res.json({
       success: true,
       message: 'Service updated successfully',
-      service: service
+      service: updatedService.rows[0]
     });
 
   } catch (error) {
@@ -293,13 +369,12 @@ app.put('/api/services/:id', authMiddleware, async (req, res) => {
 // DELETE /api/services/:id
 app.delete('/api/services/:id', authMiddleware, async (req, res) => {
   try {
-    const service = await Service.findByIdAndUpdate(
-      req.params.id,
-      { isActive: false },
-      { new: true }
+    const deletedService = await pool.query(
+      'UPDATE services SET is_active = false WHERE id = $1 RETURNING *',
+      [req.params.id]
     );
 
-    if (!service) {
+    if (deletedService.rows.length === 0) {
       return res.status(404).json({ 
         success: false, 
         message: 'Service not found' 
@@ -321,12 +396,12 @@ app.delete('/api/services/:id', authMiddleware, async (req, res) => {
 });
 
 // 🔹 3. FORM REQUESTS APIs
+
 // POST /api/requests
 app.post('/api/requests', async (req, res) => {
   try {
     const { userName, userPhone, serviceName, serviceId, aadharNumber, address } = req.body;
 
-    // Validation
     if (!userName || !userPhone || !serviceName || !serviceId) {
       return res.status(400).json({ 
         success: false, 
@@ -334,22 +409,16 @@ app.post('/api/requests', async (req, res) => {
       });
     }
 
-    const request = new Request({
-      userName,
-      userPhone,
-      serviceName,
-      serviceId,
-      aadharNumber,
-      address,
-      status: 'pending'
-    });
-
-    await request.save();
+    const newRequest = await pool.query(
+      `INSERT INTO requests (user_name, user_phone, service_name, service_id, aadhar_number, address) 
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [userName, userPhone, serviceName, serviceId, aadharNumber, address]
+    );
 
     res.status(201).json({
       success: true,
       message: 'Application submitted successfully',
-      request: request
+      request: newRequest.rows[0]
     });
 
   } catch (error) {
@@ -364,10 +433,13 @@ app.post('/api/requests', async (req, res) => {
 // GET /api/requests
 app.get('/api/requests', async (req, res) => {
   try {
-    const requests = await Request.find().sort({ submittedAt: -1 });
+    const requestsResult = await pool.query(
+      'SELECT * FROM requests ORDER BY submitted_at DESC'
+    );
+    
     res.json({
       success: true,
-      requests: requests
+      requests: requestsResult.rows
     });
   } catch (error) {
     console.error('Get requests error:', error);
@@ -381,10 +453,14 @@ app.get('/api/requests', async (req, res) => {
 // GET /api/requests/user/:phone
 app.get('/api/requests/user/:phone', async (req, res) => {
   try {
-    const requests = await Request.find({ userPhone: req.params.phone }).sort({ submittedAt: -1 });
+    const requestsResult = await pool.query(
+      'SELECT * FROM requests WHERE user_phone = $1 ORDER BY submitted_at DESC',
+      [req.params.phone]
+    );
+    
     res.json({
-      success: true,
-      requests: requests
+      success: false, 
+      message: 'Error fetching user requests' 
     });
   } catch (error) {
     console.error('Get user requests error:', error);
@@ -407,13 +483,12 @@ app.put('/api/requests/:id/status', async (req, res) => {
       });
     }
 
-    const request = await Request.findByIdAndUpdate(
-      req.params.id,
-      { status, updatedAt: Date.now() },
-      { new: true }
+    const updatedRequest = await pool.query(
+      'UPDATE requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      [status, req.params.id]
     );
 
-    if (!request) {
+    if (updatedRequest.rows.length === 0) {
       return res.status(404).json({ 
         success: false, 
         message: 'Request not found' 
@@ -423,7 +498,7 @@ app.put('/api/requests/:id/status', async (req, res) => {
     res.json({
       success: true,
       message: 'Status updated successfully',
-      request: request
+      request: updatedRequest.rows[0]
     });
 
   } catch (error) {
@@ -440,6 +515,8 @@ app.get('/', (req, res) => {
   res.json({ 
     message: 'Tabish Seva Kendra Backend API', 
     version: '1.0.0',
+    database: 'PostgreSQL',
+    status: 'Running',
     endpoints: [
       'POST /api/auth/register',
       'POST /api/auth/login',
@@ -455,7 +532,7 @@ app.get('/', (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
