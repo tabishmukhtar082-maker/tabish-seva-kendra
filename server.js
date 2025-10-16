@@ -68,7 +68,7 @@ const initializeDatabase = async () => {
       )
     `);
 
-    // Requests table
+    // Requests table - UPDATED WITH REGISTRATION NUMBER
     await client.query(`
       CREATE TABLE IF NOT EXISTS requests (
         id SERIAL PRIMARY KEY,
@@ -78,6 +78,7 @@ const initializeDatabase = async () => {
         service_id VARCHAR(50) NOT NULL,
         aadhar_number VARCHAR(12),
         address TEXT,
+        registration_no VARCHAR(100) UNIQUE, -- ✅ REGISTRATION NUMBER ADDED
         status VARCHAR(20) DEFAULT 'pending',
         submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -85,6 +86,17 @@ const initializeDatabase = async () => {
     `);
 
     console.log('✅ Tables created successfully');
+
+    // ✅ ADD REGISTRATION NUMBER COLUMN IF NOT EXISTS (FOR EXISTING TABLES)
+    try {
+      await client.query(`
+        ALTER TABLE requests 
+        ADD COLUMN IF NOT EXISTS registration_no VARCHAR(100)
+      `);
+      console.log('✅ Registration number column added/verified');
+    } catch (alterError) {
+      console.log('ℹ️ Registration column already exists or error:', alterError.message);
+    }
 
     // Insert default services
     const servicesResult = await client.query('SELECT COUNT(*) FROM services');
@@ -102,13 +114,22 @@ const initializeDatabase = async () => {
       console.log('✅ Services already exist');
     }
 
-    // Check existing tables
+    // Check existing tables and columns
     const tablesResult = await client.query(`
       SELECT table_name 
       FROM information_schema.tables 
       WHERE table_schema = 'public'
     `);
     console.log('✅ Existing Tables:', tablesResult.rows.map(row => row.table_name));
+
+    // Check requests table columns
+    const columnsResult = await client.query(`
+      SELECT column_name, data_type 
+      FROM information_schema.columns 
+      WHERE table_name = 'requests' 
+      ORDER BY ordinal_position
+    `);
+    console.log('✅ Requests Table Columns:', columnsResult.rows.map(row => row.column_name));
     
     client.release();
     console.log('🎉 Database initialization completed!');
@@ -395,12 +416,12 @@ app.delete('/api/services/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// 🔹 3. FORM REQUESTS APIs
+// 🔹 3. FORM REQUESTS APIs - UPDATED WITH REGISTRATION NUMBER
 
-// POST /api/requests
+// POST /api/requests - UPDATED WITH REGISTRATION NUMBER
 app.post('/api/requests', async (req, res) => {
   try {
-    const { userName, userPhone, serviceName, serviceId, aadharNumber, address } = req.body;
+    const { userName, userPhone, serviceName, serviceId, aadharNumber, address, registrationNo } = req.body;
 
     if (!userName || !userPhone || !serviceName || !serviceId) {
       return res.status(400).json({ 
@@ -409,10 +430,13 @@ app.post('/api/requests', async (req, res) => {
       });
     }
 
+    // ✅ GENERATE REGISTRATION NUMBER IF NOT PROVIDED
+    const finalRegistrationNo = registrationNo || `REG${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
     const newRequest = await pool.query(
-      `INSERT INTO requests (user_name, user_phone, service_name, service_id, aadhar_number, address) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [userName, userPhone, serviceName, serviceId, aadharNumber, address]
+      `INSERT INTO requests (user_name, user_phone, service_name, service_id, aadhar_number, address, registration_no) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [userName, userPhone, serviceName, serviceId, aadharNumber, address, finalRegistrationNo]
     );
 
     res.status(201).json({
@@ -459,14 +483,42 @@ app.get('/api/requests/user/:phone', async (req, res) => {
     );
     
     res.json({
-      success: false, 
-      message: 'Error fetching user requests' 
+      success: true,
+      requests: requestsResult.rows
     });
   } catch (error) {
     console.error('Get user requests error:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Error fetching user requests' 
+    });
+  }
+});
+
+// GET /api/requests/track/:registrationNo - NEW ENDPOINT FOR TRACKING
+app.get('/api/requests/track/:registrationNo', async (req, res) => {
+  try {
+    const requestsResult = await pool.query(
+      'SELECT * FROM requests WHERE registration_no = $1',
+      [req.params.registrationNo]
+    );
+    
+    if (requestsResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Application not found with this registration number' 
+      });
+    }
+
+    res.json({
+      success: true,
+      request: requestsResult.rows[0]
+    });
+  } catch (error) {
+    console.error('Track request error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error tracking application' 
     });
   }
 });
@@ -527,6 +579,7 @@ app.get('/', (req, res) => {
       'GET  /api/requests',
       'POST /api/requests',
       'GET  /api/requests/user/:phone',
+      'GET  /api/requests/track/:registrationNo', // ✅ NEW ENDPOINT
       'PUT  /api/requests/:id/status'
     ]
   });
